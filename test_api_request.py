@@ -261,6 +261,7 @@ class BTCApp(tk.Tk):
 
         # Planifier la prochaine vérification dans 15 minutes
         self.after(900000, self.start_auto_trading)
+    
 
 if __name__ == "__main__":
     app = BTCApp()
