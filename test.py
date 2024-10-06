@@ -219,7 +219,7 @@ def trading_automatique():
                 transaction_label.config(text=f"Dernière transaction ID: {transaction_id}")
                 calculer_gains()
             # Logique de vente
-            elif rsi > 70 and prix < ema200 and btc_solde > 0:
+            elif rsi > 65 and prix < ema200 and btc_solde > 0:
                 montant_btc = btc_solde
                 montant_usdt = montant_btc * prix
                 btc_solde -= montant_btc

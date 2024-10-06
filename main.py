@@ -73,10 +73,10 @@ def add_usdt():
 # Fonction pour acheter du BTC
 def acheter_btc():
     global usdt_solde, btc_solde
-    if usdt_solde <= 0:
+    montant_usdt = min(100, usdt_solde)
+    if montant_usdt <= 0:
         messagebox.showerror("Erreur", "Solde USDT insuffisant.")
         return
-    montant_usdt = usdt_solde
     montant_btc = montant_usdt / current_price
     usdt_solde -= montant_usdt
     btc_solde += montant_btc
@@ -93,27 +93,35 @@ def acheter_btc():
         'id': transaction_id,
         'action': 'achat',
         'montant_btc': montant_btc,
-        'prix': current_price,
+        'prix_achat': current_price,
         'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'montant_usdt': montant_usdt
     }
     with open(ACHATS_FILE, 'a') as f:
         json.dump(transaction, f)
         f.write('\n')
+    # Enregistrement de la position ouverte
+    position = {
+        'montant_btc': montant_btc,
+        'prix_achat': current_price
+    }
+    enregistrer_position(position)
     transaction_label.config(text=f"Dernière transaction ID: {transaction_id}")
-    # Mise à jour des gains/pertes
     calculer_gains()
+
 
 # Fonction pour vendre du BTC
 def vendre_btc():
     global usdt_solde, btc_solde
-    if btc_solde <= 0:
+    montant_usdt = min(100, btc_solde * current_price)
+    if montant_usdt <= 0:
         messagebox.showerror("Erreur", "Solde BTC insuffisant.")
         return
-    montant_btc = btc_solde
-    montant_usdt = montant_btc * current_price
+    montant_btc = montant_usdt / current_price
+    if montant_btc > btc_solde:
+        montant_btc = btc_solde
     btc_solde -= montant_btc
-    usdt_solde += montant_usdt
+    usdt_solde += montant_btc * current_price
     # Mise à jour des soldes
     usdt_label.config(text=f"Solde USDT: {usdt_solde:.2f}")
     btc_label.config(text=f"Solde BTC: {btc_solde:.6f}")
@@ -123,20 +131,23 @@ def vendre_btc():
         json.dump({'solde': btc_solde}, f)
     # Enregistrement de la transaction
     transaction_id = str(uuid.uuid4())
+    prix_vente = current_price
     transaction = {
         'id': transaction_id,
         'action': 'vente',
         'montant_btc': montant_btc,
-        'prix': current_price,
+        'prix_vente': prix_vente,
         'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'montant_usdt': montant_usdt
     }
     with open(VENTES_FILE, 'a') as f:
         json.dump(transaction, f)
         f.write('\n')
+    # Mise à jour des positions ouvertes
+    deduire_positions(montant_btc)
     transaction_label.config(text=f"Dernière transaction ID: {transaction_id}")
-    # Mise à jour des gains/pertes
     calculer_gains()
+
 
 # Fonction pour afficher le graphique des prix
 def afficher_graphique():
@@ -176,29 +187,30 @@ def afficher_graphique():
 
 # Fonction pour calculer et afficher les gains/pertes
 def calculer_gains():
-    gain = 0
+    # Gains réalisés
     try:
-        with open(ACHATS_FILE, 'r') as f:
-            achats = [json.loads(line) for line in f]
+        with open('gains_realises.json', 'r') as f:
+            gains_realises = json.load(f)
     except FileNotFoundError:
-        achats = []
+        gains_realises = []
+    total_gains_realises = sum(item['gain'] for item in gains_realises)
+    # Gains non réalisés
     try:
-        with open(VENTES_FILE, 'r') as f:
-            ventes = [json.loads(line) for line in f]
+        with open('positions.json', 'r') as f:
+            positions = json.load(f)
     except FileNotFoundError:
-        ventes = []
-    for achat in achats:
-        gain -= achat['montant_usdt']
-    for vente in ventes:
-        gain += vente['montant_usdt']
-    gains_label.config(text=f"Gains/Pertes: {gain:.2f} USDT")
+        positions = []
+    gains_non_realises = sum((current_price - pos['prix_achat']) * pos['montant_btc'] for pos in positions)
+    # Total des gains
+    total_gains = total_gains_realises + gains_non_realises
+    gains_label.config(text=f"Gains/Pertes: {total_gains:.2f} USDT")
 
 # Fonction de trading automatique
 def trading_automatique():
     global usdt_solde, btc_solde
     while True:
         try:
-            # Récupérer les données de marché
+            # Récupération des données de marché
             klines = client.klines('BTCUSDT', '1m', limit=500)
             df = pd.DataFrame(klines)
             df = df.iloc[:, :6]
@@ -211,34 +223,87 @@ def trading_automatique():
             df['EMA200'] = ta.trend.EMAIndicator(df['Close'], window=200).ema_indicator()
             df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
 
-            # Calculer les niveaux de Fibonacci
-            N = 100
-            recent_df = df.tail(N)
-            max_price = recent_df['High'].max()
-            min_price = recent_df['Low'].min()
-            price_diff = max_price - min_price
-
-            level_61_8 = max_price - price_diff * 0.618
-            level_38_2 = max_price - price_diff * 0.382
-
             # Récupérer les dernières valeurs
             last_row = df.iloc[-1]
             prix = last_row['Close']
+            ema200 = last_row['EMA200']
             rsi = last_row['RSI']
 
+            # Afficher les valeurs pour debug
+            print(f"RSI: {rsi:.2f}, Prix: {prix:.2f}, EMA200: {ema200:.2f}")
+
             # Logique d'achat
-            if prix <= level_61_8 and rsi < 30 and usdt_solde > 0:
+            if rsi < 30 and prix > ema200 and usdt_solde > 0:
+                print("Conditions d'achat remplies, exécution de l'achat.")
                 acheter_btc()
-                print("Achat automatique exécuté.")
 
             # Logique de vente
-            elif prix >= level_38_2 and rsi > 70 and btc_solde > 0:
+            elif rsi > 70 and prix < ema200 and btc_solde > 0:
+                print("Conditions de vente remplies, exécution de la vente.")
                 vendre_btc()
-                print("Vente automatique exécutée.")
+
+            else:
+                print("Conditions non remplies, aucune action exécutée.")
 
         except Exception as e:
             print("Erreur dans le trading automatique:", e)
         time.sleep(60)
+
+def realiser_gain(position, montant_btc_vendu):
+    gain = (current_price - position['prix_achat']) * montant_btc_vendu
+    try:
+        with open('gains_realises.json', 'r') as f:
+            gains = json.load(f)
+    except FileNotFoundError:
+        gains = []
+    gains.append({
+        'montant_btc_vendu': montant_btc_vendu,
+        'prix_achat': position['prix_achat'],
+        'prix_vente': current_price,
+        'gain': gain,
+        'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    })
+    with open('gains_realises.json', 'w') as f:
+        json.dump(gains, f)
+
+def enregistrer_position(position):
+    try:
+        with open('positions.json', 'r') as f:
+            positions = json.load(f)
+    except FileNotFoundError:
+        positions = []
+    positions.append(position)
+    with open('positions.json', 'w') as f:
+        json.dump(positions, f)
+
+
+def deduire_positions(montant_btc_vendu):
+    try:
+        with open('positions.json', 'r') as f:
+            positions = json.load(f)
+    except FileNotFoundError:
+        positions = []
+    montant_btc_restante = montant_btc_vendu
+    nouvelles_positions = []
+    for position in positions:
+        if montant_btc_restante >= position['montant_btc']:
+            montant_btc_restante -= position['montant_btc']
+            # Enregistrer la réalisation de la position
+            realiser_gain(position, position['montant_btc'])
+        else:
+            # Mettre à jour la position restante
+            position_restante = {
+                'montant_btc': position['montant_btc'] - montant_btc_restante,
+                'prix_achat': position['prix_achat']
+            }
+            nouvelles_positions.append(position_restante)
+            # Enregistrer la réalisation partielle
+            realiser_gain(position, montant_btc_restante)
+            montant_btc_restante = 0
+            nouvelles_positions.extend(positions[positions.index(position)+1:])
+            break
+    with open('positions.json', 'w') as f:
+        json.dump(nouvelles_positions, f)
 
 
 # Création de la fenêtre principale
